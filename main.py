@@ -251,7 +251,7 @@ def main():
     """
     الدالة الرئيسية لتشغيل البوت بواسطة التوكن.
     """
-    TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+    TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
 
     logger.info("بدء تشغيل البوت...")
     application = Application.builder().token(TOKEN).build()
