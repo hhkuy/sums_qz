@@ -1,127 +1,220 @@
-import telebot
-import requests
+# main.py
+import os
 import json
 import random
+from uuid import uuid4
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+    ConversationHandler
+)
 
-# استبدل 'YOUR_BOT_TOKEN' بالتوكن الخاص ببوتك
-bot = telebot.TeleBot('YOUR_BOT_TOKEN')
+# States
+SELECT_TOPIC, SELECT_SUBTOPIC, SELECT_QUESTION_COUNT, TAKE_QUIZ = range(4)
 
-# رابط المستودع على GitHub
-GITHUB_REPO_URL = "https://raw.githubusercontent.com/username/repo/main/"
+# Load topics data
+with open('data/topics.json', 'r', encoding='utf-8') as f:
+    TOPICS_DATA = json.load(f)
 
-# تحميل ملف topics.json
-topics_url = GITHUB_REPO_URL + "data/topics.json"
-response = requests.get(topics_url)
-topics_data = response.json()
+def get_subtopics(topic_name):
+    for topic in TOPICS_DATA:
+        if topic['topicName'] == topic_name:
+            return topic['subTopics']
+    return []
 
-# حالة المستخدم
-user_state = {}
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_id = message.chat.id
-    user_state[user_id] = {"step": "select_topic"}
-    show_topics(message)
-
-def show_topics(message):
-    user_id = message.chat.id
-    markup = telebot.types.ReplyKeyboardMarkup(row_width=1, one_time_keyboard=True)
-    for topic in topics_data:
-        markup.add(telebot.types.KeyboardButton(topic['topicName']))
-    bot.send_message(user_id, "اختر الموضوع:", reply_markup=markup)
-
-@bot.message_handler(func=lambda message: user_state.get(message.chat.id, {}).get("step") == "select_topic")
-def handle_topic_selection(message):
-    user_id = message.chat.id
-    selected_topic = message.text
-    user_state[user_id]["selected_topic"] = selected_topic
-    user_state[user_id]["step"] = "select_subtopic"
-
-    # البحث عن الموضوع المحدد
-    topic = next((t for t in topics_data if t['topicName'] == selected_topic), None)
-    if topic:
-        markup = telebot.types.ReplyKeyboardMarkup(row_width=1, one_time_keyboard=True)
-        for sub_topic in topic['subTopics']:
-            markup.add(telebot.types.KeyboardButton(sub_topic['name']))
-        bot.send_message(user_id, "اختر الموضوع الفرعي:", reply_markup=markup)
-    else:
-        bot.send_message(user_id, "الموضوع غير موجود، يرجى المحاولة مرة أخرى.")
-        show_topics(message)
-
-@bot.message_handler(func=lambda message: user_state.get(message.chat.id, {}).get("step") == "select_subtopic")
-def handle_subtopic_selection(message):
-    user_id = message.chat.id
-    selected_subtopic = message.text
-    user_state[user_id]["selected_subtopic"] = selected_subtopic
-    user_state[user_id]["step"] = "ask_question_count"
-
-    bot.send_message(user_id, "كم عدد الأسئلة التي تريدها؟")
-
-@bot.message_handler(func=lambda message: user_state.get(message.chat.id, {}).get("step") == "ask_question_count")
-def handle_question_count(message):
-    user_id = message.chat.id
+def load_questions(subtopic_file):
     try:
-        question_count = int(message.text)
-        if question_count <= 0:
-            raise ValueError
-        user_state[user_id]["question_count"] = question_count
-        user_state[user_id]["step"] = "start_quiz"
+        with open(subtopic_file, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading questions: {e}")
+        return []
 
-        # جلب ملف الأسئلة
-        selected_topic = user_state[user_id]["selected_topic"]
-        selected_subtopic = user_state[user_id]["selected_subtopic"]
-        topic = next((t for t in topics_data if t['topicName'] == selected_topic), None)
-        if topic:
-            sub_topic = next((st for st in topic['subTopics'] if st['name'] == selected_subtopic), None)
-            if sub_topic:
-                questions_url = GITHUB_REPO_URL + sub_topic['file']
-                response = requests.get(questions_url)
-                questions_data = response.json()
-                user_state[user_id]["questions"] = random.sample(questions_data, min(question_count, len(questions_data)))
-                user_state[user_id]["current_question"] = 0
-                user_state[user_id]["score"] = 0
-                send_question(user_id)
-            else:
-                bot.send_message(user_id, "الموضوع الفرعي غير موجود، يرجى المحاولة مرة أخرى.")
-                show_topics(message)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    keyboard = [
+        [InlineKeyboardButton(topic["topicName"], callback_data=f"topic_{i}")]
+        for i, topic in enumerate(TOPICS_DATA)
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "مرحبا! اختر الموضوع:",
+        reply_markup=reply_markup
+    )
+    return SELECT_TOPIC
+
+async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    topic_index = int(query.data.split('_')[1])
+    topic = TOPICS_DATA[topic_index]
+    context.user_data['selected_topic'] = topic
+    
+    subtopics = topic['subTopics']
+    keyboard = [
+        [InlineKeyboardButton(st['name'], callback_data=f"subtopic_{i}")]
+        for i, st in enumerate(subtopics)
+    ]
+    keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_to_topics")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        f"اختر الموضوع الفرعي لـ {topic['topicName']}:",
+        reply_markup=reply_markup
+    )
+    return SELECT_SUBTOPIC
+
+async def select_subtopic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "back_to_topics":
+        return await start(update, context)
+    
+    subtopic_index = int(query.data.split('_')[1])
+    topic = context.user_data['selected_topic']
+    subtopic = topic['subTopics'][subtopic_index]
+    context.user_data['selected_subtopic'] = subtopic
+    
+    await query.edit_message_text(
+        f"أدخل عدد الأسئلة التي تريدها (1-{len(load_questions(subtopic['file']))}):"
+    )
+    return SELECT_QUESTION_COUNT
+
+async def select_question_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    subtopic = context.user_data['selected_subtopic']
+    questions = load_questions(subtopic['file'])
+    
+    try:
+        num_questions = int(update.message.text)
+        max_questions = len(questions)
+        if 1 <= num_questions <= max_questions:
+            selected_questions = random.sample(questions, num_questions)
+            context.user_data['quiz'] = {
+                'questions': selected_questions,
+                'current_question': 0,
+                'score': 0,
+                'quiz_id': str(uuid4())
+            }
+            
+            return await send_question(update, context)
         else:
-            bot.send_message(user_id, "الموضوع غير موجود، يرجى المحاولة مرة أخرى.")
-            show_topics(message)
+            await update.message.reply_text(f"الرجاء إدخال رقم بين 1 و {max_questions}")
+            return SELECT_QUESTION_COUNT
     except ValueError:
-        bot.send_message(user_id, "الرجاء إدخال عدد صحيح موجب.")
+        await update.message.reply_text("الرجاء إدخال رقم صحيح")
+        return SELECT_QUESTION_COUNT
 
-def send_question(user_id):
-    current_question = user_state[user_id]["current_question"]
-    questions = user_state[user_id]["questions"]
-    if current_question < len(questions):
-        question_data = questions[current_question]
-        question_text = question_data['question']
-        options = question_data['options']
-        markup = telebot.types.ReplyKeyboardMarkup(row_width=1, one_time_keyboard=True)
-        for option in options:
-            markup.add(telebot.types.KeyboardButton(option))
-        bot.send_message(user_id, question_text, reply_markup=markup)
+async def send_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    quiz = context.user_data['quiz']
+    current = quiz['current_question']
+    question = quiz['questions'][current]
+    
+    keyboard = [
+        [InlineKeyboardButton(opt, callback_data=f"answer_{i}")]
+        for i, opt in enumerate(question['options'])
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if isinstance(update, Update) and update.message:
+        await update.message.reply_text(
+            f"السؤال {current + 1}:\n{question['question']}",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
     else:
-        bot.send_message(user_id, f"انتهى الاختبار! نتيجتك: {user_state[user_id]['score']}/{len(questions)}")
-        user_state[user_id] = {}
+        await update.callback_query.edit_message_text(
+            f"السؤال {current + 1}:\n{question['question']}",
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    return TAKE_QUIZ
 
-@bot.message_handler(func=lambda message: user_state.get(message.chat.id, {}).get("step") == "start_quiz")
-def handle_answer(message):
-    user_id = message.chat.id
-    current_question = user_state[user_id]["current_question"]
-    questions = user_state[user_id]["questions"]
-    question_data = questions[current_question]
-    correct_answer = question_data['options'][question_data['answer']]
-    user_answer = message.text
-
-    if user_answer == correct_answer:
-        user_state[user_id]["score"] += 1
-        bot.send_message(user_id, "إجابة صحيحة!")
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    quiz = context.user_data['quiz']
+    current = quiz['current_question']
+    question = quiz['questions'][current]
+    selected_answer = int(query.data.split('_')[1])
+    
+    # Save user answer
+    question['userAnswer'] = selected_answer
+    
+    # Check answer
+    if selected_answer == question['answer']:
+        quiz['score'] += 1
+    
+    # Move to next question
+    quiz['current_question'] += 1
+    
+    if quiz['current_question'] < len(quiz['questions']):
+        return await send_question(update, context)
     else:
-        bot.send_message(user_id, f"إجابة خاطئة! الإجابة الصحيحة هي: {correct_answer}")
+        return await show_results(update, context)
 
-    user_state[user_id]["current_question"] += 1
-    send_question(user_id)
+async def show_results(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    quiz = context.user_data['quiz']
+    score = quiz['score']
+    total = len(quiz['questions'])
+    
+    result_text = f"النتيجة النهائية: {score}/{total}\n\n"
+    
+    for i, q in enumerate(quiz['questions']):
+        result_text += f"السؤال {i+1}:\n"
+        result_text += f"إجابتك: {q['options'][q['userAnswer']]}\n"
+        result_text += f"الإجابة الصحيحة: {q['answerText']}\n"
+        result_text += f"التفسير: {q['explanation']}\n\n"
+    
+    await update.callback_query.edit_message_text(result_text)
+    return ConversationHandler.END
 
-# تشغيل البوت
-bot.polling()
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        'تم الإلغاء',
+        reply_markup=ReplyKeyboardRemove()
+    )
+    return ConversationHandler.END
+
+def main() -> None:
+    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            SELECT_TOPIC: [CallbackQueryHandler(select_topic, pattern=r'^topic_\d+$')],
+            SELECT_SUBTOPIC: [
+                CallbackQueryHandler(select_subtopic, pattern=r'^subtopic_\d+$'),
+                CallbackQueryHandler(select_topic, pattern=r'^back_to_topics$')
+            ],
+            SELECT_QUESTION_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_question_count)],
+            TAKE_QUIZ: [CallbackQueryHandler(handle_answer, pattern=r'^answer_\d+$')]
+        },
+        fallbacks=[CommandHandler('cancel', cancel)],
+    )
+
+    application.add_handler(conv_handler)
+    
+    # Handle mentions in groups
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.Regex(r'@' + os.getenv('BOT_USERNAME')),
+        start
+    ))
+
+    application.run_polling()
+
+if __name__ == '__main__':
+    main()
