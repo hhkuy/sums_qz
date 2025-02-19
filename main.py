@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 # مراحل Conversation
 CHOOSING_TOPIC, CHOOSING_SUBTOPIC, TYPING_QUESTION_COUNT, QUIZ_IN_PROGRESS = range(4)
 
-# مسار GitHub (raw) الرئيسي (عدله إذا تغيّر اسم المستخدم أو المستودع)
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main/"
+# لاحظ أننا أزلنا "data/" هنا. انتهينا مباشرة بـ "main"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -41,8 +41,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     logger.info("تم استقبال أمر /start من المستخدم %s", update.effective_user.id)
 
-    # المسار الكامل لملف المواضيع
-    topics_url = GITHUB_RAW_BASE + "data/topics.json"
+    # هنا نضيف "/data/topics.json" لأننا حذفنا data/ من الثابت بالأعلى
+    topics_url = GITHUB_RAW_BASE + "/data/topics.json"
     try:
         resp = requests.get(topics_url)
         resp.raise_for_status()
@@ -112,7 +112,7 @@ async def choose_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # زر العودة لقائمة المواضيع الرئيسية
     keyboard.append([InlineKeyboardButton("« رجوع", callback_data="back|topics")])
 
-    if not keyboard:
+    if not sub_topics:
         await query.edit_message_text("لا توجد مواضيع فرعية لهذا الموضوع.")
         return CHOOSING_TOPIC
 
@@ -220,8 +220,8 @@ async def receive_question_count(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("لم يتم تحديد ملف الأسئلة. اكتب /start مجدداً.")
         return ConversationHandler.END
 
-    # تجهيز الرابط الكامل للملف
-    questions_url = GITHUB_RAW_BASE + questions_file_path
+    # تجهيز الرابط الكامل للملف (لاحظ أننا وضعنا "/" بينهما)
+    questions_url = GITHUB_RAW_BASE + "/" + questions_file_path
     logger.info("جلب الأسئلة من: %s", questions_url)
 
     try:
