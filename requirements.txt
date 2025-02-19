@@ -1,2 +1,4 @@
-telebot
-requests
+# requirements.txt
+python-telegram-bot==20.3
+python-dotenv==1.0.0
+uuid==1.30
