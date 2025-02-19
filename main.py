@@ -188,6 +188,7 @@ def main():
     """
     الدالة الرئيسية لتشغيل البوت باستخدام التوكن المُعطى.
     """
+    # تأكد من وضع التوكن الخاص بك هنا:
     TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
     application = Application.builder().token(TOKEN).build()
 
