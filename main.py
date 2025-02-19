@@ -1,8 +1,8 @@
 # main.py
-import os
 import json
 import random
 from uuid import uuid4
+import requests
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -19,31 +19,40 @@ from telegram.ext import (
     ConversationHandler
 )
 
+# Configuration
+TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
+BOT_USERNAME = "@SumsQuestionsBot"
+GITHUB_BASE_URL = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main/"
+
 # States
 SELECT_TOPIC, SELECT_SUBTOPIC, SELECT_QUESTION_COUNT, TAKE_QUIZ = range(4)
 
-# Load topics data
-with open('data/topics.json', 'r', encoding='utf-8') as f:
-    TOPICS_DATA = json.load(f)
+def get_topics_data():
+    url = f"{GITHUB_BASE_URL}topics.json"
+    response = requests.get(url)
+    return response.json() if response.status_code == 200 else []
 
 def get_subtopics(topic_name):
-    for topic in TOPICS_DATA:
+    topics = get_topics_data()
+    for topic in topics:
         if topic['topicName'] == topic_name:
             return topic['subTopics']
     return []
 
 def load_questions(subtopic_file):
     try:
-        with open(subtopic_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        url = f"{GITHUB_BASE_URL}{subtopic_file}"
+        response = requests.get(url)
+        return response.json() if response.status_code == 200 else []
     except Exception as e:
         print(f"Error loading questions: {e}")
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    topics = get_topics_data()
     keyboard = [
         [InlineKeyboardButton(topic["topicName"], callback_data=f"topic_{i}")]
-        for i, topic in enumerate(TOPICS_DATA)
+        for i, topic in enumerate(topics)
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -57,7 +66,8 @@ async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await query.answer()
     
     topic_index = int(query.data.split('_')[1])
-    topic = TOPICS_DATA[topic_index]
+    topics = get_topics_data()
+    topic = topics[topic_index]
     context.user_data['selected_topic'] = topic
     
     subtopics = topic['subTopics']
@@ -190,7 +200,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 def main() -> None:
-    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+    application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start)],
@@ -210,7 +220,7 @@ def main() -> None:
     
     # Handle mentions in groups
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.Regex(r'@' + os.getenv('BOT_USERNAME')),
+        filters.TEXT & ~filters.COMMAND & filters.Regex(rf'@{BOT_USERNAME}'),
         start
     ))
 
