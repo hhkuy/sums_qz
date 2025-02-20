@@ -1,337 +1,376 @@
 import logging
+import requests
 import json
 import random
-import requests
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Poll,
+    PollOption,
+)
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
+    ContextTypes,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    PollAnswerHandler,
-    ConversationHandler,
-    ContextTypes,
     filters,
 )
 
-# إعداد تسجيل الأخطاء والمعلومات
+# ===================================================
+# 1) إعدادات وتسجيل لوج
+# ===================================================
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+
 logger = logging.getLogger(__name__)
 
-# تعريف مراحل المحادثة
-SELECT_TOPIC, SELECT_SUBTOPIC, SELECT_NUM_QUESTIONS, WAITING_FOR_ANSWER = range(4)
+# ===================================================
+# 2) روابط GitHub لسحب الملفات (topics.json وملفات الأسئلة)
+# ===================================================
+# مستودع الأمثلة الذي ذكرتَه:
+BASE_RAW_URL = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main"  # رابط المستودع الأساسي (يمكن تعديله حسب الفرع/folder)
 
-# رابط GitHub RAW لتحميل ملفات البيانات (topics.json والملفات الخاصة بالأسئلة)
-GITHUB_RAW_BASE = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main/"
+TOPICS_JSON_URL = f"{BASE_RAW_URL}/topics.json"
+# ملاحظة: ملف الـ JSON "topics.json" موجود في جذر المجلد حسب ما ذُكر في الرابط:
+# https://github.com/hhkuy/Sums_Q/blob/main/topics.json
+#
+# وعند تحميل ملفات الأسئلة، يجب أن نستخدم المسار (file) الموجود في السجل
+# مثلا: data/anatomy_of_limbs_upper_limbs.json -> BASE_RAW_URL + "/" + "data/anatomy_of_limbs_upper_limbs.json"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===================================================
+# 3) دوال جلب البيانات من GitHub
+# ===================================================
+def fetch_topics():
     """
-    دالة /start:
-    - تحميل ملف topics.json من GitHub.
-    - عرض قائمة المواضيع الرئيسية للمستخدم.
+    جلب ملف الـ topics.json من مستودع GitHub على شكل list[dict].
     """
-    logger.info("استقبال أمر /start من المستخدم %s", update.effective_user.id)
+    try:
+        response = requests.get(TOPICS_JSON_URL)
+        response.raise_for_status()
+        return response.json()  # قائمة القواميس
+    except Exception as e:
+        logger.error(f"Error fetching topics: {e}")
+        return []
 
-    url = GITHUB_RAW_BASE + "data/topics.json"
+
+def fetch_questions(file_path: str):
+    """
+    جلب ملف الأسئلة من GitHub بالاعتماد على المسار (file_path) الخاص بالموضوع الفرعي.
+    يعيد List[dict] من الأسئلة.
+    """
+    url = f"{BASE_RAW_URL}/{file_path}"
     try:
         response = requests.get(url)
         response.raise_for_status()
-    except requests.RequestException as e:
-        logger.error("خطأ أثناء جلب المواضيع من GitHub: %s", e)
-        await update.message.reply_text("تعذّر تحميل المواضيع من GitHub.")
-        return ConversationHandler.END
+        return response.json()  # قائمة الأسئلة
+    except Exception as e:
+        logger.error(f"Error fetching questions from {url}: {e}")
+        return []
 
-    try:
-        topics_list = response.json()  # نتوقع أن يكون مصفوفة من المواضيع
-    except json.JSONDecodeError as e:
-        logger.error("ملف topics.json ليس بصيغة JSON صحيحة: %s", e)
-        await update.message.reply_text("ملف المواضيع غير صالح (JSON).")
-        return ConversationHandler.END
+# ===================================================
+# 4) القوائم الرئيسية وحالة السياق
+# ===================================================
+# سنحتفظ ببعض المعلومات في context.user_data لكي نستطيع التنقل بـ زر الرجوع
+# - current_topic_index: اندكس الموضوع الحالي
+# - current_subtopic_index: اندكس الموضوع الفرعي
+# - topics: قائمة المواضيع كاملة
+# - subtopics: قائمة المواضيع الفرعية للموضوع المختار
+# - questions_list: قائمة الأسئلة الخاصة بالموضوع الفرعي المختار
+# - num_questions: عدد الأسئلة التي سيختبر بها المستخدم
 
-    if not topics_list:
-        await update.message.reply_text("لا توجد مواضيع في ملف topics.json!")
-        return ConversationHandler.END
+# المفاتيح الرئيسية في user_data
+TOPICS_KEY = "topics"
+CUR_TOPIC_IDX_KEY = "current_topic_index"
+CUR_SUBTOPIC_IDX_KEY = "current_subtopic_index"
+NUM_QUESTIONS_KEY = "num_questions"
+CURRENT_STATE_KEY = "current_state"
+QUESTIONS_KEY = "questions_list"
 
-    # حفظ بيانات المواضيع في user_data لإعادة استخدامها
-    context.user_data["topics_data"] = topics_list
+# سنعرّف بعض الـ States (بشكل نصي بسيط)
+STATE_SELECT_TOPIC = "select_topic"
+STATE_SELECT_SUBTOPIC = "select_subtopic"
+STATE_ASK_NUM_QUESTIONS = "ask_num_questions"
+STATE_SENDING_QUESTIONS = "sending_questions"
 
-    # إنشاء قائمة أزرار للمواضيع الرئيسية فقط
+# ===================================================
+# 5) دوال المساعدة لإنشاء الأزرار
+# ===================================================
+def generate_topics_inline_keyboard(topics_data):
+    """
+    إنشاء إنلاين كيبورد لقائمة المواضيع.
+    """
     keyboard = []
-    for index, topic in enumerate(topics_list):
-        topic_name = topic.get("topicName", "بدون اسم")
-        keyboard.append([InlineKeyboardButton(topic_name, callback_data=f"topic|{index}")])
+    for i, topic in enumerate(topics_data):
+        btn = InlineKeyboardButton(text=topic["topicName"], callback_data=f"topic_{i}")
+        keyboard.append([btn])
+    # لا حاجة لزر الرجوع هنا لأن /start هو أعلى شيء
+    return InlineKeyboardMarkup(keyboard)
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("اختر موضوعاً للاختبار:", reply_markup=reply_markup)
-    return SELECT_TOPIC
-
-async def select_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def generate_subtopics_inline_keyboard(topic, topic_index):
     """
-    عند اختيار موضوع رئيسي:
-    - يتم استخراج فهرس الموضوع وعرض المواضيع الفرعية الخاصة به.
+    إنشاء إنلاين كيبورد لقائمة المواضيع الفرعية + زر الرجوع.
     """
-    query = update.callback_query
-    await query.answer()
-    data = query.data.split("|")
-    if data[0] != "topic":
-        await query.edit_message_text("اختيار غير صالح.")
-        return ConversationHandler.END
-
-    try:
-        topic_index = int(data[1])
-    except ValueError:
-        await query.edit_message_text("اختيار غير صالح (فهرس).")
-        return ConversationHandler.END
-
-    topics_data = context.user_data.get("topics_data", [])
-    if topic_index < 0 or topic_index >= len(topics_data):
-        await query.edit_message_text("اختيار غير صالح (خارج النطاق).")
-        return ConversationHandler.END
-
-    selected_topic = topics_data[topic_index]
-    context.user_data["selected_topic_index"] = topic_index
-
-    sub_topics = selected_topic.get("subTopics", [])
-    if not sub_topics:
-        await query.edit_message_text("لا توجد مواضيع فرعية في هذا الموضوع.")
-        return ConversationHandler.END
-
     keyboard = []
-    for index, sub in enumerate(sub_topics):
-        sub_name = sub.get("name")
-        if not sub_name:
-            continue
-        # ترميز بيانات الموضع الفرعي مع رقم الموضوع والفهرس الفرعي
-        keyboard.append([InlineKeyboardButton(sub_name, callback_data=f"subtopic|{topic_index}|{index}")])
-    # إضافة زر رجوع للعودة لقائمة المواضيع الرئيسية
-    keyboard.append([InlineKeyboardButton("رجوع", callback_data="back_to_topics")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("اختر موضوعاً فرعياً للاختبار:", reply_markup=reply_markup)
-    return SELECT_SUBTOPIC
-
-async def back_to_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    دالة العودة إلى قائمة المواضيع الرئيسية.
-    """
-    query = update.callback_query
-    await query.answer()
-    topics_data = context.user_data.get("topics_data", [])
-    if not topics_data:
-        await query.edit_message_text("لا توجد مواضيع.")
-        return ConversationHandler.END
-
-    keyboard = []
-    for index, topic in enumerate(topics_data):
-        topic_name = topic.get("topicName", "بدون اسم")
-        keyboard.append([InlineKeyboardButton(topic_name, callback_data=f"topic|{index}")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("اختر موضوعاً للاختبار:", reply_markup=reply_markup)
-    return SELECT_TOPIC
-
-async def select_subtopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    عند اختيار موضوع فرعي:
-    - يتم استخراج مسار ملف الأسئلة الخاص به.
-    - يُطلب من المستخدم إدخال عدد الأسئلة.
-    """
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data.split("|")
-    if data[0] != "subtopic":
-        await query.edit_message_text("اختيار غير صالح.")
-        return ConversationHandler.END
-
-    try:
-        topic_index = int(data[1])
-        sub_index = int(data[2])
-    except ValueError:
-        await query.edit_message_text("اختيار غير صالح (فهرس).")
-        return ConversationHandler.END
-
-    topics_data = context.user_data.get("topics_data", [])
-    if topic_index < 0 or topic_index >= len(topics_data):
-        await query.edit_message_text("اختيار غير صالح (خارج النطاق).")
-        return ConversationHandler.END
-
-    selected_topic = topics_data[topic_index]
-    sub_topics = selected_topic.get("subTopics", [])
-    if sub_index < 0 or sub_index >= len(sub_topics):
-        await query.edit_message_text("اختيار غير صالح (خارج النطاق).")
-        return ConversationHandler.END
-
-    selected_sub = sub_topics[sub_index]
-    file_path = selected_sub.get("file")
-    if not file_path:
-        await query.edit_message_text("ملف الأسئلة غير موجود.")
-        return ConversationHandler.END
-
-    context.user_data["questions_file"] = file_path
-
-    await query.edit_message_text("كم عدد الأسئلة التي ترغب في الحصول عليها؟ (أدخل رقم)")
-    return SELECT_NUM_QUESTIONS
-
-async def select_num_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    بعد إدخال عدد الأسئلة:
-    - تحميل ملف الأسئلة من GitHub.
-    - اختيار عدد عشوائي من الأسئلة وإرسال كل سؤال على شكل استفتاء (quiz).
-    """
-    num_text = update.message.text.strip()
-    logger.info("المستخدم %s أدخل عدد الأسئلة: %s", update.effective_user.id, num_text)
-
-    try:
-        num_questions = int(num_text)
-        if num_questions <= 0:
-            await update.message.reply_text("الرجاء إدخال رقم موجب.")
-            return SELECT_NUM_QUESTIONS
-    except ValueError:
-        await update.message.reply_text("الرجاء إدخال رقم صحيح.")
-        return SELECT_NUM_QUESTIONS
-
-    context.user_data["num_questions"] = num_questions
-
-    questions_file = context.user_data.get("questions_file")
-    if not questions_file:
-        await update.message.reply_text("ملف الأسئلة غير محدد.")
-        return ConversationHandler.END
-
-    questions_url = GITHUB_RAW_BASE + questions_file
-    logger.info("جلب الأسئلة من: %s", questions_url)
-    try:
-        response = requests.get(questions_url)
-        response.raise_for_status()
-        questions_list = response.json()
-    except requests.RequestException as e:
-        logger.error("خطأ أثناء جلب الأسئلة: %s", e)
-        await update.message.reply_text("حدث خطأ أثناء تحميل الأسئلة من GitHub.")
-        return ConversationHandler.END
-    except json.JSONDecodeError as e:
-        logger.error("ملف الأسئلة JSON غير صالح: %s", e)
-        await update.message.reply_text("ملف الأسئلة غير صالح (JSON).")
-        return ConversationHandler.END
-
-    if not questions_list:
-        await update.message.reply_text("لا توجد أسئلة في هذا الملف.")
-        return ConversationHandler.END
-
-    random.shuffle(questions_list)
-    selected_questions = questions_list[:num_questions]
-
-    context.user_data["selected_questions"] = selected_questions
-    context.user_data["score"] = 0
-    context.user_data["total"] = len(selected_questions)
-    context.user_data["answered"] = 0
-    context.user_data["polls"] = {}
-
-    await update.message.reply_text("سيبدأ الاختبار الآن. أجب عن الأسئلة التالية:")
-
-    for i, question in enumerate(selected_questions, start=1):
-        q_text = question.get("question", f"سؤال #{i}")
-        options = question.get("options", ["خيار 1", "خيار 2"])
-        correct_id = question.get("answer", 0)  # رقم الخيار الصحيح
-        explanation = question.get("explanation", "")
-
-        sent_poll = await update.message.bot.send_poll(
-            chat_id=update.effective_chat.id,
-            question=q_text,
-            options=options,
-            type="quiz",
-            correct_option_id=correct_id,
-            is_anonymous=False,
-            explanation=explanation,
-            open_period=120,  # مدة الرد بالثواني (يمكن التعديل)
-            parse_mode="HTML"
+    subtopics = topic.get("subTopics", [])
+    for j, sub in enumerate(subtopics):
+        btn = InlineKeyboardButton(
+            text=sub["name"],
+            callback_data=f"subtopic_{topic_index}_{j}"
         )
-        poll_id = sent_poll.poll.id
-        context.user_data["polls"][poll_id] = {
-            "correct_option_id": correct_id,
-            "answered": False
-        }
+        keyboard.append([btn])
+    # زر الرجوع لقائمة المواضيع
+    back_btn = InlineKeyboardButton("« رجوع للمواضيع", callback_data="go_back_topics")
+    keyboard.append([back_btn])
+    return InlineKeyboardMarkup(keyboard)
 
-    return WAITING_FOR_ANSWER
 
-async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ===================================================
+# 6) هاندلرز الأوامر الرئيسية
+# ===================================================
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    معالجة إجابات الاستفتاء وعرض النتيجة عند الانتهاء من جميع الأسئلة.
+    هاندلر للأمر /start يعرض قائمة المواضيع.
     """
-    poll_answer = update.poll_answer
-    poll_id = poll_answer.poll_id
-    selected_options = poll_answer.option_ids
-    user_id = poll_answer.user.id
+    # جلب قائمة المواضيع وتخزينها في user_data (مرة واحدة)
+    topics_data = fetch_topics()
+    context.user_data[TOPICS_KEY] = topics_data
 
-    logger.info("إجابة جديدة من المستخدم %s على poll_id=%s, selected=%s", user_id, poll_id, selected_options)
+    if not topics_data:
+        await update.message.reply_text("حدث خطأ في جلب المواضيع من GitHub!")
+        return
 
-    if "polls" in context.user_data and poll_id in context.user_data["polls"]:
-        poll_data = context.user_data["polls"][poll_id]
-        if poll_data["answered"]:
-            logger.info("تمت الإجابة مسبقاً على هذا الاستفتاء.")
-            return
+    context.user_data[CURRENT_STATE_KEY] = STATE_SELECT_TOPIC
+    keyboard = generate_topics_inline_keyboard(topics_data)
 
-        poll_data["answered"] = True
-
-        if selected_options and selected_options[0] == poll_data["correct_option_id"]:
-            context.user_data["score"] += 1
-
-        context.user_data["answered"] += 1
-
-        if context.user_data["answered"] == context.user_data["total"]:
-            score = context.user_data["score"]
-            total = context.user_data["total"]
-            logger.info("انتهاء الاختبار للمستخدم %s. النتيجة: %d/%d", user_id, score, total)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"انتهى الاختبار!\nنتيجتك: {score} من {total}"
-            )
-            context.user_data.clear()
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    أمر /cancel لإلغاء الاختبار أو المحادثة.
-    """
-    logger.info("استخدم المستخدم %s أمر /cancel", update.effective_user.id)
-    await update.message.reply_text("تم إلغاء الاختبار.")
-    return ConversationHandler.END
-
-def main():
-    """
-    الدالة الرئيسية لتشغيل البوت باستخدام التوكن.
-    """
-    # ضع هنا توكن البوت الخاص بك
-    TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
-
-    logger.info("بدء تشغيل البوت...")
-    application = Application.builder().token(TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            SELECT_TOPIC: [
-                CallbackQueryHandler(select_topic, pattern="^topic\\|")
-            ],
-            SELECT_SUBTOPIC: [
-                CallbackQueryHandler(select_subtopic, pattern="^subtopic\\|"),
-                CallbackQueryHandler(back_to_topics, pattern="^back_to_topics$")
-            ],
-            SELECT_NUM_QUESTIONS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, select_num_questions)
-            ],
-            # مرحلة WAITING_FOR_ANSWER ليست بحاجة لمعالجات إضافية؛ ننتظر إجابات الاستفتاء
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        allow_reentry=True
+    await update.message.reply_text(
+        text="مرحبًا بك! اختر الموضوع الرئيسي من القائمة:",
+        reply_markup=keyboard
     )
 
-    application.add_handler(conv_handler)
-    application.add_handler(PollAnswerHandler(handle_poll_answer))
 
-    logger.info("البوت يعمل الآن. ارسل /start للبدء.")
-    application.run_polling()
+# ===================================================
+# 7) هاندلر للـ CallbackQuery (الأزرار)
+# ===================================================
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()  # لمنع ظهور الـ 'loading...'
+
+    data = query.data
+
+    # ------------------------------------------------------------------------
+    # إذا كانت الصيغة "topic_{i}" => يعني اختار موضوع رئيسي
+    # ------------------------------------------------------------------------
+    if data.startswith("topic_"):
+        # مثال: data = "topic_3"
+        _, idx_str = data.split("_")
+        topic_index = int(idx_str)
+        context.user_data[CUR_TOPIC_IDX_KEY] = topic_index
+        context.user_data[CURRENT_STATE_KEY] = STATE_SELECT_SUBTOPIC
+
+        topics_data = context.user_data.get(TOPICS_KEY, [])
+        if topic_index < 0 or topic_index >= len(topics_data):
+            await query.message.reply_text("خيار غير صحيح.")
+            return
+
+        chosen_topic = topics_data[topic_index]
+        # عرض المواضيع الفرعية
+        subtopics_keyboard = generate_subtopics_inline_keyboard(chosen_topic, topic_index)
+        msg_text = f"اختر الموضوع الفرعي لـ: *{chosen_topic['topicName']}*\n\n{chosen_topic['description']}"
+        await query.message.edit_text(
+            text=msg_text,
+            parse_mode="Markdown",
+            reply_markup=subtopics_keyboard
+        )
+
+    # ------------------------------------------------------------------------
+    # زر الرجوع لقائمة المواضيع
+    # ------------------------------------------------------------------------
+    elif data == "go_back_topics":
+        context.user_data[CURRENT_STATE_KEY] = STATE_SELECT_TOPIC
+        topics_data = context.user_data.get(TOPICS_KEY, [])
+        keyboard = generate_topics_inline_keyboard(topics_data)
+        await query.message.edit_text(
+            text="اختر الموضوع الرئيسي من القائمة:",
+            reply_markup=keyboard
+        )
+
+    # ------------------------------------------------------------------------
+    # إذا كانت الصيغة subtopic_{topic_index}_{sub_index}
+    # ------------------------------------------------------------------------
+    elif data.startswith("subtopic_"):
+        # مثال: data = "subtopic_0_2"
+        _, t_idx_str, s_idx_str = data.split("_")
+        t_idx = int(t_idx_str)
+        s_idx = int(s_idx_str)
+        context.user_data[CUR_TOPIC_IDX_KEY] = t_idx
+        context.user_data[CUR_SUBTOPIC_IDX_KEY] = s_idx
+        context.user_data[CURRENT_STATE_KEY] = STATE_ASK_NUM_QUESTIONS
+
+        # يمكننا سؤال المستخدم مباشرةً عن العدد في نفس الرسالة
+        # أو نستخدم `reply_markup` بعرض زر رجوع فقط (لأننا سندخل العدد بالكتابة).
+        back_btn = InlineKeyboardButton("« رجوع للمواضيع الفرعية", callback_data=f"go_back_subtopics_{t_idx}")
+        kb = InlineKeyboardMarkup([[back_btn]])
+
+        # عرض رسالة تطلب من المستخدم إدخال عدد الأسئلة
+        await query.message.edit_text(
+            text="أدخل عدد الأسئلة المطلوبة (أرسل رقمًا فقط):",
+            reply_markup=kb
+        )
+
+    # ------------------------------------------------------------------------
+    # زر الرجوع لقائمة المواضيع الفرعية
+    # ------------------------------------------------------------------------
+    elif data.startswith("go_back_subtopics_"):
+        # استعادة الـ topic_index
+        _, t_idx_str = data.split("_subtopics_")
+        t_idx = int(t_idx_str)
+        context.user_data[CUR_TOPIC_IDX_KEY] = t_idx
+        context.user_data[CURRENT_STATE_KEY] = STATE_SELECT_SUBTOPIC
+
+        topics_data = context.user_data.get(TOPICS_KEY, [])
+        if 0 <= t_idx < len(topics_data):
+            chosen_topic = topics_data[t_idx]
+            subtopics_keyboard = generate_subtopics_inline_keyboard(chosen_topic, t_idx)
+            msg_text = f"اختر الموضوع الفرعي لـ: *{chosen_topic['topicName']}*\n\n{chosen_topic['description']}"
+            await query.message.edit_text(
+                text=msg_text,
+                parse_mode="Markdown",
+                reply_markup=subtopics_keyboard
+            )
+        else:
+            await query.message.edit_text("خيار غير صحيح.")
+
+    else:
+        await query.message.reply_text("لم أفهم هذا الخيار.")
+
+
+# ===================================================
+# 8) هاندلر استقبال الرسائل (للتعامل مع إدخال عدد الأسئلة)
+# ===================================================
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_state = context.user_data.get(CURRENT_STATE_KEY, None)
+
+    # إذا كنا في مرحلة "ASK_NUM_QUESTIONS" فنحن ننتظر إدخال عدد الأسئلة
+    if user_state == STATE_ASK_NUM_QUESTIONS:
+        text = update.message.text.strip()
+        if not text.isdigit():
+            await update.message.reply_text("من فضلك أدخل رقمًا صحيحًا.")
+            return
+
+        num_q = int(text)
+        if num_q <= 0:
+            await update.message.reply_text("العدد يجب أن يكون أكبر من صفر.")
+            return
+
+        # حفظ العدد في user_data
+        context.user_data[NUM_QUESTIONS_KEY] = num_q
+        context.user_data[CURRENT_STATE_KEY] = STATE_SENDING_QUESTIONS
+
+        # الآن نجلب الأسئلة من الملف المناسب
+        topics_data = context.user_data.get(TOPICS_KEY, [])
+        t_idx = context.user_data.get(CUR_TOPIC_IDX_KEY, 0)
+        s_idx = context.user_data.get(CUR_SUBTOPIC_IDX_KEY, 0)
+
+        if t_idx < 0 or t_idx >= len(topics_data):
+            await update.message.reply_text("خطأ في اختيار الموضوع.")
+            return
+
+        subtopics = topics_data[t_idx].get("subTopics", [])
+        if s_idx < 0 or s_idx >= len(subtopics):
+            await update.message.reply_text("خطأ في اختيار الموضوع الفرعي.")
+            return
+
+        file_path = subtopics[s_idx]["file"]  # مسار ملف الأسئلة
+        questions = fetch_questions(file_path)
+        if not questions:
+            await update.message.reply_text("لم أتمكن من جلب أسئلة لهذا الموضوع الفرعي.")
+            return
+
+        # إذا كان العدد المطلوب أكبر من الأسئلة المتوفرة، نستخدم جميع الأسئلة.
+        if num_q > len(questions):
+            num_q = len(questions)
+
+        # اختيار عشوائي أو بالترتيب. هنا سنختار عشوائيًا:
+        random.shuffle(questions)
+        selected_questions = questions[:num_q]
+
+        # تخزينها في user_data (لو احتجنا)
+        context.user_data[QUESTIONS_KEY] = selected_questions
+
+        # إرسال رسالة توضيحية
+        await update.message.reply_text(f"سيتم إرسال {num_q} سؤال(أسئلة) في شكل Poll. بالتوفيق!")
+
+        # إرسال الأسئلة
+        # ملاحظة: تيليجرام يسمح بـ 10 خيارات فقط في الـ Poll. أسئلتك غالبًا فيها 4 خيارات، فهذا مناسب.
+        for idx, q in enumerate(selected_questions, start=1):
+            question_text = q["question"]
+            options = q["options"]  # قائمة الاختيارات
+            # مطلوب تحديد index الإجابة الصحيحة لفحصه => Telegram Poll يحتاج تحديد correct_option_id للأحادية
+            correct_id = q["answer"]  # بالنسبة للـ JSON المعطى: index من 0-based أم 1-based؟
+            # لاحظ أن "answer": 2 => قد يكون index=2 (لو كان 0-based يصبح الخيار الثالث). تأكد من التوافق.
+            # حسب الأمثلة، يبدو أنه 0-based, لكن الأرقام في الأمثلة "answer": 2 ... إلخ. تحققنا من الأسئلة مثال:
+            # "answer": 2 => تعني الخيار رقم 2 من الـ 0-based؛ إذا لديك شك تأكد بتعديل الصيغة.
+
+            # تحضير السؤال كـ Poll
+            # سنختار يكون "is_anonymous=False" و "type=Poll.QUIZ" ليظهر كـ Quiz
+            # لو أردنا تجميع الإجابات دون إظهار الصح والخطأ نستعمل type=Poll.REGULAR
+            await context.bot.send_poll(
+                chat_id=update.message.chat_id,
+                question=f"سؤال {idx}: {question_text}",
+                options=options,
+                type=Poll.QUIZ,
+                correct_option_id=correct_id,
+                explanation=q["explanation"] if "explanation" in q else "",
+                is_anonymous=False
+            )
+
+        # بعد إرسال الأسئلة، يمكننا إعادة الحالة إلى شيء آخر (مثلا الإنتهاء)
+        context.user_data[CURRENT_STATE_KEY] = None
+
+    else:
+        # أي رسالة أخرى في غير وقتها
+        await update.message.reply_text("أرسل /start لاختيار الموضوع من جديد أو اضغط على الأزرار المتاحة.")
+
+
+# ===================================================
+# 9) دالة الـ main وتشغيل البوت
+# ===================================================
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "الأوامر المتاحة:\n"
+        "/start - لبدء اختيار المواضيع\n"
+        "/help - عرض هذه الرسالة\n\n"
+        "يمكنك أيضًا منادات البوت في المجموعات وسيعمل."
+    )
+    await update.message.reply_text(help_text)
+
+
+def main():
+    # ضع التوكن الخاص بك هنا
+    BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
+
+    # إنشاء التطبيق
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # ربط الهاندلرز
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+
+    # الهاندلر للأزرار (CallbackQuery)
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # الهاندلر للرسائل النصية العادية (لاستقبال عدد الأسئلة)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    # تشغيل البوت (Blocking)
+    print("Bot is running...")
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
