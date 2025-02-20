@@ -352,7 +352,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     # ضع التوكن الخاص بك هنا
-    BOT_TOKEN = "PUT_YOUR_BOT_TOKEN_HERE"
+    BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
 
     # إنشاء التطبيق
     app = ApplicationBuilder().token(BOT_TOKEN).build()
