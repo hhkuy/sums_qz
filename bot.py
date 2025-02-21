@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------
 # 2) توكن البوت
 # ---------------------------------------------------------------------
-# يفضَّل وضعه في متغير بيئة على Vercel بدلًا من كتابته مباشرةً
+# يُفضَّل وضع التوكن في متغير بيئة على Vercel
 BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
 
 # ---------------------------------------------------------------------
@@ -85,7 +85,7 @@ STATE_SELECT_SUBTOPIC = "select_subtopic"
 STATE_ASK_NUM_QUESTIONS = "ask_num_questions"
 STATE_SENDING_QUESTIONS = "sending_questions"
 
-ACTIVE_QUIZ_KEY = "active_quiz"  # تخزين بيانات الكويز في chat_data
+ACTIVE_QUIZ_KEY = "active_quiz"  # لتخزين بيانات الكويز في chat_data
 
 # ---------------------------------------------------------------------
 # 6) دوال لإنشاء أزرار InlineKeyboard
@@ -398,14 +398,14 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
 # ---------------------------------------------------------------------
-# 12) إعداد تطبيق Flask (لتشغيل البوت أونلاين)
+# 12) إنشاء تطبيق Flask بمسار /ping
 # ---------------------------------------------------------------------
 flask_app = Flask(__name__)
 
-@flask_app.route("/")
-def index():
-    # صفحة بسيطة تستخدم لعمل Ping بواسطة Uptime Robot
-    return "I'm alive!"
+@flask_app.route("/ping")
+def ping():
+    # يمكنك عمل Ping على هذا المسار عبر Uptime Robot لإبقاء البوت نشطًا
+    return "Bot is alive!"
 
 # ---------------------------------------------------------------------
 # 13) تشغيل بوت تيليجرام في Thread + تشغيل Flask
