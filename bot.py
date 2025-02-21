@@ -3,6 +3,7 @@ import requests
 import json
 import random
 import re
+import asyncio
 
 from telegram import (
     Update,
@@ -27,12 +28,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
-logger = logging.getLogger(name)
+logger = logging.getLogger(__name__)
 
 # -------------------------------------------------
-# 2) توكن البوت (يفضَّل تغييره لاحقًا)
+# 2) توكن البوت
 # -------------------------------------------------
-BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
+BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"  # أو استخدم متغير بيئة
 
 # -------------------------------------------------
 # 3) روابط GitHub لجلب الملفات
@@ -328,6 +329,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         owner_id = update.message.from_user.id
         chat_id = update.message.chat_id
 
+        # إرسال كل سؤال
         for idx, q in enumerate(selected_questions, start=1):
             # إزالة أي وسوم HTML من نص السؤال
             raw_question = q.get("question", "سؤال بدون نص!")
@@ -354,6 +356,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pid = sent_msg.poll.id
                 poll_ids.append(pid)
                 poll_correct_answers[pid] = correct_id
+
+            # انتظار ثانيتين لتفادي أي مشكلة في إرسال الاستفتاءات بسرعة
+            await asyncio.sleep(2)
 
         # تخزين بيانات الكويز
         context.user_data[ACTIVE_QUIZ_KEY] = {
@@ -445,9 +450,9 @@ def main():
     # استقبال أجوبة الاستفتاء (PollAnswer)
     app.add_handler(PollAnswerHandler(poll_answer_handler))
 
-    print("Bot is running...")
+    logger.info("Bot is running on Railway...")
     app.run_polling()
 
 
-if name == "main":
+if __name__ == "__main__":
     main()
