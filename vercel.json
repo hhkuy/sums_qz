@@ -4,15 +4,20 @@
     {
       "src": "bot.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "index.html",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
     {
-      "src": "/(.*)",
+      "src": "/ping",
       "dest": "bot.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
     }
-  ],
-  "env": {
-    "PORT": "8000"
-  }
+  ]
 }
