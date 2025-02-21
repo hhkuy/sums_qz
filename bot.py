@@ -5,29 +5,25 @@ import re
 import os
 import asyncio
 
-from flask import Flask, request, Response
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Poll
-)
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Poll
 from telegram.ext import (
     ApplicationBuilder,
-    ContextTypes,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
     PollAnswerHandler,
+    ContextTypes,
     filters
 )
 
 # ---------------------------------------------------------------------
-# 1) ضبط نظام اللوج
+# 1) إعداد السجلات (Logging)
 # ---------------------------------------------------------------------
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
@@ -37,7 +33,7 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
 
 # ---------------------------------------------------------------------
-# 3) إعدادات مستودع GitHub لجلب البيانات
+# 3) إعدادات GitHub لجلب البيانات (topics.json وملفات الأسئلة)
 # ---------------------------------------------------------------------
 BASE_RAW_URL = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main"
 TOPICS_JSON_URL = f"{BASE_RAW_URL}/data/topics.json"
@@ -54,7 +50,7 @@ def fetch_topics():
 
 def fetch_questions(file_path: str):
     """
-    جلب ملف الأسئلة من GitHub بناءً على المسار الخاص بالموضوع الفرعي.
+    جلب ملف الأسئلة من GitHub بالاعتماد على المسار الخاص بالموضوع الفرعي.
     مثال: data/anatomy_of_limbs_lower_limbs.json
     """
     url = f"{BASE_RAW_URL}/{file_path}"
@@ -67,7 +63,7 @@ def fetch_questions(file_path: str):
         return []
 
 # ---------------------------------------------------------------------
-# 4) مفاتيح لتخزين الحالة في user_data و chat_data
+# 4) مفاتيح لتخزين الحالة
 # ---------------------------------------------------------------------
 TOPICS_KEY = "topics"
 CUR_TOPIC_IDX_KEY = "current_topic_index"
@@ -103,7 +99,7 @@ def generate_subtopics_inline_keyboard(topic, topic_index):
     return InlineKeyboardMarkup(keyboard)
 
 # ---------------------------------------------------------------------
-# 6) أوامر البوت: /start
+# 6) أوامر البوت (Handlers)
 # ---------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics_data = fetch_topics()
@@ -118,9 +114,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-# ---------------------------------------------------------------------
-# 7) أوامر البوت: /help
-# ---------------------------------------------------------------------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
         "الأوامر المتاحة:\n"
@@ -131,9 +124,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text)
 
-# ---------------------------------------------------------------------
-# 8) هاندلر للأزرار (CallbackQueryHandler)
-# ---------------------------------------------------------------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -181,9 +171,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await query.message.reply_text("لم أفهم هذا الخيار.")
 
-# ---------------------------------------------------------------------
-# 9) هاندلر استقبال الرسائل (عدد الأسئلة وتريجر في المجموعات)
-# ---------------------------------------------------------------------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.message.text.strip()
     lower_text = text_msg.lower()
@@ -219,15 +206,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         total_available = len(questions)
         if num_q > total_available:
-            await update.message.reply_text(
-                f"عدد الأسئلة المتوفرة: {total_available}\nلا يمكن تزويدك بـ {num_q} سؤال."
-            )
+            await update.message.reply_text(f"عدد الأسئلة المتوفرة: {total_available}\nلا يمكن تزويدك بـ {num_q} سؤال.")
             return
         context.user_data[NUM_QUESTIONS_KEY] = num_q
         context.user_data[CURRENT_STATE_KEY] = STATE_SENDING_QUESTIONS
-        await update.message.reply_text(
-            f"سيتم إرسال {num_q} سؤال(أسئلة) على شكل استفتاء (Quiz). بالتوفيق!"
-        )
+        await update.message.reply_text(f"سيتم إرسال {num_q} سؤال(أسئلة) على شكل استفتاء (Quiz). بالتوفيق!")
         quiz_data = {
             "poll_ids": [],
             "poll_correct_answers": {},
@@ -258,9 +241,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 quiz_data["poll_correct_answers"][pid] = correct_id
         context.user_data[CURRENT_STATE_KEY] = None
 
-# ---------------------------------------------------------------------
-# 10) هاندلر لاستقبال إجابات الاستفتاء (PollAnswerHandler)
-# ---------------------------------------------------------------------
 async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     poll_answer = update.poll_answer
     user_id = poll_answer.user.id
@@ -298,14 +278,10 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 f"الإجابات الخاطئة: {wrong}\n"
                 f"النتيجة: {correct} / {total}"
             )
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=result_msg,
-                parse_mode="HTML"
-            )
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=result_msg, parse_mode="HTML")
 
 # ---------------------------------------------------------------------
-# 11) إنشاء تطبيق تيليجرام (Application) وضبط Webhook
+# إنشاء تطبيق Telegram (Application) وتسجيل الهاندلرز
 # ---------------------------------------------------------------------
 app_telegram = ApplicationBuilder().token(BOT_TOKEN).build()
 app_telegram.add_handler(CommandHandler("start", start_command))
@@ -315,51 +291,36 @@ app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message
 app_telegram.add_handler(PollAnswerHandler(poll_answer_handler))
 
 # ---------------------------------------------------------------------
-# 12) إنشاء تطبيق Flask لمعالجة /webhook
+# إنشاء تطبيق FastAPI (ASGI) لتشغيل Webhook
 # ---------------------------------------------------------------------
-flask_app = Flask(__name__)
+fastapi_app = FastAPI()
 
-@flask_app.route("/webhook", methods=["POST"])
-def webhook_handler():
-    try:
-        data = request.get_json(force=True)
-    except Exception as e:
-        logger.error(f"Error parsing JSON: {e}")
-        return Response("Bad Request", status=400)
-    try:
-        update = Update.de_json(data, app_telegram.bot)
-    except Exception as e:
-        logger.error(f"Error creating Update: {e}")
-        return Response("Bad Request", status=400)
-    # تأكد من إنشاء حلقة أحداث جديدة لتشغيل العملية اللا تزامنية
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(app_telegram.process_update(update))
-        loop.close()
-    except Exception as e:
-        logger.error(f"Error in process_update: {e}")
-        return Response("Internal Server Error", status=500)
-    return Response("OK", status=200)
+@fastapi_app.post("/webhook")
+async def webhook_endpoint(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, app_telegram.bot)
+    # قم بإنشاء مهمة لمعالجة التحديث دون انتظار النتيجة
+    asyncio.create_task(app_telegram.process_update(update))
+    return PlainTextResponse("OK", status_code=200)
 
-@flask_app.route("/")
-def index():
-    return "I'm alive!"
+@fastapi_app.get("/")
+async def root():
+    return PlainTextResponse("I'm alive!", status_code=200)
 
 # ---------------------------------------------------------------------
-# 13) ضبط Webhook
+# ضبط Webhook (يجب تنفيذه مرة واحدة عند بدء التشغيل)
 # ---------------------------------------------------------------------
 WEBHOOK_URL = "https://sums-qz.vercel.app/webhook"
 try:
-    app_telegram.bot.delete_webhook(drop_pending_updates=True)
-    app_telegram.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set to: {WEBHOOK_URL}")
+    # حذف الويب هوك القديم
+    await_result = asyncio.run(app_telegram.bot.delete_webhook(drop_pending_updates=True))
+    # ضبط الويب هوك الجديد
+    await_result = asyncio.run(app_telegram.bot.set_webhook(url=WEBHOOK_URL))
+    logger.info(f"Webhook set: {await_result}")
 except Exception as e:
     logger.error(f"Error setting webhook: {e}")
 
 # ---------------------------------------------------------------------
-# 14) نقطة الدخول الرئيسية لتشغيل Flask (Vercel سيستدعي هذه الدالة)
+# نقطة الدخول لـ ASGI (FastAPI)
 # ---------------------------------------------------------------------
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    flask_app.run(host="0.0.0.0", port=port)
+# على Vercel، سيتم استخدام fastapi_app كنقطة دخول ASGI
