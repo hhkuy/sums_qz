@@ -1,22 +1,20 @@
 import logging
-from flask import Flask, request, Response
+from flask import Flask, request
 
-# ضبط مستوى اللوج
+# ضبط مستوى تسجيل الرسائل (اللوج)
 logging.basicConfig(level=logging.INFO)
 
 # إنشاء تطبيق Flask
 app = Flask(__name__)
 
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    logging.info("Received a POST request on /webhook.")
-    # يمكن لاحقًا إضافة منطق البوت أو التعامل مع JSON
-    return Response("OK", status=200)
+    logging.info("Request on /webhook with method %s", request.method)
+    # هنا يمكن لاحقًا إضافة منطق البوت أو التعامل مع JSON الوارد من تيليجرام
+    return "OK from /webhook"
 
-@app.route("/")
-def index():
-    return "I'm alive!"
+# ملاحظة هامة:
+# لا نستدعي app.run(...) في بيئة Vercel serverless.
+# Vercel سيقوم تلقائيًا بتحويل 'app' إلى سيرفر WSGI/ASGI.
 
-if __name__ == "__main__":
-    # تشغيل الخادم محليًا أو على Vercel مع المنفذ 8000
-    app.run(host="0.0.0.0", port=8000)
+# لا يوجد if __name__ == "__main__": لأننا لا نشغل محليًا.
