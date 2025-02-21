@@ -6,7 +6,7 @@ import re
 import os
 import threading
 
-from flask import Flask, request
+from flask import Flask
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -33,8 +33,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------
-# 2) توكن البوت (استخدم التوكن الذي لديك)
+# 2) توكن البوت
 # ---------------------------------------------------------------------
+# يفضَّل وضعه في متغير بيئة على Vercel بدلًا من كتابته مباشرةً
 BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
 
 # ---------------------------------------------------------------------
@@ -73,21 +74,18 @@ def fetch_questions(file_path: str):
 # ---------------------------------------------------------------------
 # 5) مفاتيح لتخزين الحالة في user_data و chat_data
 # ---------------------------------------------------------------------
-# لحالة المستخدم أثناء اختيار الموضوع وعدد الأسئلة
 TOPICS_KEY = "topics"
 CUR_TOPIC_IDX_KEY = "current_topic_index"
 CUR_SUBTOPIC_IDX_KEY = "current_subtopic_index"
 NUM_QUESTIONS_KEY = "num_questions"
 CURRENT_STATE_KEY = "current_state"
-QUESTIONS_KEY = "questions_list"
 
 STATE_SELECT_TOPIC = "select_topic"
 STATE_SELECT_SUBTOPIC = "select_subtopic"
 STATE_ASK_NUM_QUESTIONS = "ask_num_questions"
 STATE_SENDING_QUESTIONS = "sending_questions"
 
-# لتخزين بيانات الكويز في الدردشة (ليستفيد منها جميع الأعضاء)
-ACTIVE_QUIZ_KEY = "active_quiz"
+ACTIVE_QUIZ_KEY = "active_quiz"  # تخزين بيانات الكويز في chat_data
 
 # ---------------------------------------------------------------------
 # 6) دوال لإنشاء أزرار InlineKeyboard
@@ -217,6 +215,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("go_back_subtopics_"):
+        # زر الرجوع لقائمة المواضيع الفرعية
         _, t_idx_str = data.split("_subtopics_")
         t_idx = int(t_idx_str)
         user_data[CUR_TOPIC_IDX_KEY] = t_idx
@@ -239,12 +238,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("لم أفهم هذا الخيار.")
 
 # ---------------------------------------------------------------------
-# 10) هاندلر استقبال الرسائل (لعدد الأسئلة وتريجر في المجموعات)
+# 10) هاندلر استقبال الرسائل (لعدد الأسئلة + تريجر في المجموعات)
 # ---------------------------------------------------------------------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.message.text.strip()
-    chat_id = update.message.chat_id
     lower_text = text_msg.lower()
+    chat_id = update.message.chat_id
 
     # في المجموعات: إذا احتوى النص على إحدى العبارات، ننفذ /start
     if update.message.chat.type in ("group", "supergroup"):
@@ -255,6 +254,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_state = context.user_data.get(CURRENT_STATE_KEY, None)
     if user_state == STATE_ASK_NUM_QUESTIONS:
+        # المستخدم أدخل عدد الأسئلة
         if not text_msg.isdigit():
             await update.message.reply_text("من فضلك أدخل رقمًا صحيحًا.")
             return
@@ -290,6 +290,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # عدد الأسئلة مناسب
         context.user_data[NUM_QUESTIONS_KEY] = num_q
         context.user_data[CURRENT_STATE_KEY] = STATE_SENDING_QUESTIONS
 
@@ -297,19 +298,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"سيتم إرسال {num_q} سؤال(أسئلة) على شكل استفتاء (Quiz). بالتوفيق!"
         )
 
-        # تهيئة بيانات الكويز في chat_data (ليستفيد منها جميع أعضاء الدردشة)
+        # تهيئة بيانات الكويز في chat_data
         quiz_data = {
             "poll_ids": [],
             "poll_correct_answers": {},
             "total": num_q,
-            "participants": {}  # لكل مشارك: user_id -> {answered_count, correct_count, wrong_count}
+            "participants": {}  # user_id -> {"answered_count":0, "correct_count":0, "wrong_count":0}
         }
         context.chat_data[ACTIVE_QUIZ_KEY] = quiz_data
 
-        for q in random.sample(questions, num_q):
+        # نختار أسئلة عشوائيًا
+        selected_questions = random.sample(questions, num_q)
+        for q in selected_questions:
             raw_question = q.get("question", "سؤال بدون نص!")
+            # إزالة تنسيقات HTML
             clean_question = re.sub(r"<.*?>", "", raw_question).strip()
+            # تنسيق: Question X -> Question X -
             clean_question = re.sub(r"(Question\s*\d+)", r"\1 -", clean_question)
+
             options = q.get("options", [])
             correct_id = q.get("answer", 0)
             explanation = q.get("explanation", "")
@@ -330,6 +336,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data[CURRENT_STATE_KEY] = None
     else:
+        # أي رسالة أخرى نتجاهلها
         pass
 
 # ---------------------------------------------------------------------
@@ -341,8 +348,7 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     poll_id = poll_answer.poll_id
     selected_options = poll_answer.option_ids
 
-    chat_data = context.chat_data
-    quiz_data = chat_data.get(ACTIVE_QUIZ_KEY)
+    quiz_data = context.chat_data.get(ACTIVE_QUIZ_KEY)
     if not quiz_data or poll_id not in quiz_data["poll_ids"]:
         return
 
@@ -359,12 +365,13 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             }
         p_data = participants[user_id]
         p_data["answered_count"] += 1
+
         if chosen_index == correct_option_id:
             p_data["correct_count"] += 1
         else:
             p_data["wrong_count"] += 1
 
-        # إذا أكمل المشارك جميع الأسئلة
+        # إذا أكمل المستخدم جميع الأسئلة
         if p_data["answered_count"] == quiz_data["total"]:
             correct = p_data["correct_count"]
             wrong = p_data["wrong_count"]
@@ -401,7 +408,7 @@ def index():
     return "I'm alive!"
 
 # ---------------------------------------------------------------------
-# 13) تشغيل بوت تيليجرام في Thread وتشغيل Flask
+# 13) تشغيل بوت تيليجرام في Thread + تشغيل Flask
 # ---------------------------------------------------------------------
 def run_telegram_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -417,6 +424,6 @@ if __name__ == "__main__":
     bot_thread = threading.Thread(target=run_telegram_bot, daemon=True)
     bot_thread.start()
 
-    # تعيين المنفذ من متغير البيئة PORT أو استخدام 8000 افتراضيًا
+    # تحديد المنفذ من متغير البيئة أو 8000 افتراضيًا
     port = int(os.environ.get("PORT", 8000))
     flask_app.run(host="0.0.0.0", port=port)
