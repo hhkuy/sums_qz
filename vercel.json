@@ -12,12 +12,15 @@
   ],
   "routes": [
     {
-      "src": "/ping",
+      "src": "/webhook",
       "dest": "bot.py"
     },
     {
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ]
+  ],
+  "env": {
+    "PORT": "8000"
+  }
 }
