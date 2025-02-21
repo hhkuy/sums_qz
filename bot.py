@@ -1,3 +1,4 @@
+import os
 import logging
 import requests
 import json
@@ -33,7 +34,9 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------
 # 2) توكن البوت
 # -------------------------------------------------
-BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"  # أو استخدم متغير بيئة
+# في حال تريد وضع التوكن مباشرة: BOT_TOKEN = "ضع_التوكن_هنا"
+# يفضل استخدام متغير بيئة على Railway باسم BOT_TOKEN
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")  
 
 # -------------------------------------------------
 # 3) روابط GitHub لجلب الملفات
