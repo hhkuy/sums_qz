@@ -3,8 +3,9 @@ import requests
 import random
 import re
 import os
+import asyncio
 
-from flask import Flask, request
+from flask import Flask, request, Response
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -12,6 +13,7 @@ from telegram import (
     Poll
 )
 from telegram.ext import (
+    Application,
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
@@ -41,9 +43,6 @@ BOT_TOKEN = "7633072361:AAHnzREYTKKRFiTiq7HDZBalnwnmgivY8_I"
 BASE_RAW_URL = "https://raw.githubusercontent.com/hhkuy/Sums_Q/main"
 TOPICS_JSON_URL = f"{BASE_RAW_URL}/data/topics.json"
 
-# ---------------------------------------------------------------------
-# 4) دوال لجلب البيانات من GitHub
-# ---------------------------------------------------------------------
 def fetch_topics():
     """جلب ملف topics.json من GitHub على شكل list[dict]."""
     try:
@@ -63,13 +62,13 @@ def fetch_questions(file_path: str):
     try:
         resp = requests.get(url)
         resp.raise_for_status()
-        return resp.json()  # قائمة من القواميس (الأسئلة)
+        return resp.json()
     except Exception as e:
         logger.error(f"Error fetching questions from {url}: {e}")
         return []
 
 # ---------------------------------------------------------------------
-# 5) مفاتيح لتخزين الحالة في user_data و chat_data
+# 4) مفاتيح لتخزين الحالة في user_data و chat_data
 # ---------------------------------------------------------------------
 TOPICS_KEY = "topics"
 CUR_TOPIC_IDX_KEY = "current_topic_index"
@@ -82,13 +81,12 @@ STATE_SELECT_SUBTOPIC = "select_subtopic"
 STATE_ASK_NUM_QUESTIONS = "ask_num_questions"
 STATE_SENDING_QUESTIONS = "sending_questions"
 
-ACTIVE_QUIZ_KEY = "active_quiz"  # لتخزين بيانات الكويز في chat_data
+ACTIVE_QUIZ_KEY = "active_quiz"
 
 # ---------------------------------------------------------------------
-# 6) دوال لإنشاء أزرار InlineKeyboard
+# 5) دوال لإنشاء أزرار InlineKeyboard
 # ---------------------------------------------------------------------
 def generate_topics_inline_keyboard(topics_data):
-    """إنشاء كيبورد لقائمة المواضيع الرئيسية."""
     keyboard = []
     for i, topic in enumerate(topics_data):
         btn = InlineKeyboardButton(
@@ -99,7 +97,6 @@ def generate_topics_inline_keyboard(topics_data):
     return InlineKeyboardMarkup(keyboard)
 
 def generate_subtopics_inline_keyboard(topic, topic_index):
-    """إنشاء كيبورد لقائمة المواضيع الفرعية مع زر الرجوع."""
     keyboard = []
     subtopics = topic.get("subTopics", [])
     for j, sub in enumerate(subtopics):
@@ -113,21 +110,14 @@ def generate_subtopics_inline_keyboard(topic, topic_index):
     return InlineKeyboardMarkup(keyboard)
 
 # ---------------------------------------------------------------------
-# 7) أوامر البوت: /start
+# 6) أوامر البوت: /start
 # ---------------------------------------------------------------------
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    عند تنفيذ /start:
-      - جلب قائمة المواضيع من GitHub.
-      - عرضها على شكل أزرار.
-    """
     topics_data = fetch_topics()
     context.user_data[TOPICS_KEY] = topics_data
 
     if not topics_data:
-        await update.message.reply_text(
-            "حدث خطأ في جلب المواضيع من GitHub! تأكد من صلاحية الرابط."
-        )
+        await update.message.reply_text("حدث خطأ في جلب المواضيع من GitHub!")
         return
 
     context.user_data[CURRENT_STATE_KEY] = STATE_SELECT_TOPIC
@@ -138,7 +128,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # ---------------------------------------------------------------------
-# 8) أوامر البوت: /help
+# 7) أوامر البوت: /help
 # ---------------------------------------------------------------------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -151,7 +141,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(help_text)
 
 # ---------------------------------------------------------------------
-# 9) هاندلر للأزرار (CallbackQueryHandler)
+# 8) هاندلر للأزرار (CallbackQueryHandler)
 # ---------------------------------------------------------------------
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -161,7 +151,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics_data = user_data.get(TOPICS_KEY, [])
 
     if data.startswith("topic_"):
-        # اختيار موضوع رئيسي
         _, idx_str = data.split("_")
         topic_index = int(idx_str)
         user_data[CUR_TOPIC_IDX_KEY] = topic_index
@@ -184,7 +173,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "go_back_topics":
-        # الرجوع لقائمة المواضيع
         user_data[CURRENT_STATE_KEY] = STATE_SELECT_TOPIC
         keyboard = generate_topics_inline_keyboard(topics_data)
         await query.message.edit_text(
@@ -193,7 +181,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data.startswith("subtopic_"):
-        # اختيار موضوع فرعي
         _, t_idx_str, s_idx_str = data.split("_")
         t_idx = int(t_idx_str)
         s_idx = int(s_idx_str)
@@ -201,10 +188,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data[CUR_SUBTOPIC_IDX_KEY] = s_idx
         user_data[CURRENT_STATE_KEY] = STATE_ASK_NUM_QUESTIONS
 
-        back_btn = InlineKeyboardButton(
-            "« رجوع للمواضيع الفرعية",
-            callback_data=f"go_back_subtopics_{t_idx}"
-        )
+        back_btn = InlineKeyboardButton("« رجوع للمواضيع الفرعية", callback_data=f"go_back_subtopics_{t_idx}")
         kb = InlineKeyboardMarkup([[back_btn]])
         await query.message.edit_text(
             text="أدخل عدد الأسئلة المطلوبة (أرسل رقمًا فقط):",
@@ -234,17 +218,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("لم أفهم هذا الخيار.")
 
 # ---------------------------------------------------------------------
-# 10) هاندلر استقبال الرسائل (لعدد الأسئلة وتريجر في المجموعات)
+# 9) هاندلر استقبال الرسائل
 # ---------------------------------------------------------------------
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_msg = update.message.text.strip()
     lower_text = text_msg.lower()
     chat_id = update.message.chat_id
 
-    # في المجموعات: إذا احتوى النص على إحدى العبارات، ننفذ /start
+    # في المجموعات: إذا احتوى النص على إحدى العبارات، نفذ /start
     if update.message.chat.type in ("group", "supergroup"):
         triggers = ["بوت سوي اسئلة", "بوت الاسئلة", "بوت وينك"]
-        if any(trig.lower() in lower_text for trig in triggers):
+        if any(trig in lower_text for trig in triggers):
             await start_command(update, context)
             return
 
@@ -292,15 +276,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"سيتم إرسال {num_q} سؤال(أسئلة) على شكل استفتاء (Quiz). بالتوفيق!"
         )
 
-        # تهيئة بيانات الكويز في chat_data
         quiz_data = {
             "poll_ids": [],
             "poll_correct_answers": {},
             "total": num_q,
-            "participants": {}  # user_id -> {"answered_count":0, "correct_count":0, "wrong_count":0}
+            "participants": {}
         }
         context.chat_data[ACTIVE_QUIZ_KEY] = quiz_data
 
+        import random
         selected_questions = random.sample(questions, num_q)
         for q in selected_questions:
             raw_question = q.get("question", "سؤال بدون نص!")
@@ -325,11 +309,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 quiz_data["poll_correct_answers"][pid] = correct_id
 
         context.user_data[CURRENT_STATE_KEY] = None
-    else:
-        pass
 
 # ---------------------------------------------------------------------
-# 11) هاندلر لاستقبال إجابات الاستفتاء (PollAnswerHandler)
+# 10) هاندلر لاستقبال إجابات الاستفتاء (PollAnswerHandler)
 # ---------------------------------------------------------------------
 async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     poll_answer = update.poll_answer
@@ -386,43 +368,59 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
 # ---------------------------------------------------------------------
-# 12) إنشاء تطبيق Flask وتحديد مسار /webhook
+# 11) إعداد تطبيق تيليجرام (Application) وضبط Webhook
+# ---------------------------------------------------------------------
+# ملاحظة: ApplicationBuilder يعيد كائن Application (لا تزامني).
+# سنخزن الكائن في متغير app_telegram
+app_telegram = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# إضافة الهاندلرز
+app_telegram.add_handler(CommandHandler("start", start_command))
+app_telegram.add_handler(CommandHandler("help", help_command))
+app_telegram.add_handler(CallbackQueryHandler(callback_handler))
+app_telegram.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+app_telegram.add_handler(PollAnswerHandler(poll_answer_handler))
+
+# ---------------------------------------------------------------------
+# 12) إنشاء تطبيق Flask لمعالجة /webhook
 # ---------------------------------------------------------------------
 flask_app = Flask(__name__)
 
 @flask_app.route("/webhook", methods=["POST"])
-def webhook_handler():
-    """تعالج التحديثات القادمة من تيليجرام عبر Webhook."""
-    update = Update.de_json(request.get_json(force=True), app.bot)
-    app.process_update(update)
+def webhook():
+    """هذه الدالة تستقبل POST من تيليجرام."""
+    data = request.get_json(force=True)
+    update = Update.de_json(data, app_telegram.bot)
+
+    # لأن process_update() دالة لا تزامنية (async)،
+    # نستخدم asyncio.run لتنفيذها في سياق تزامني
+    try:
+        asyncio.run(app_telegram.process_update(update))
+    except Exception as e:
+        logger.error(f"Error in process_update: {e}")
+
     return "OK", 200
 
 @flask_app.route("/")
 def index():
-    """صفحة وهمية عند زيارة الجذر."""
+    """صفحة الجذر: تعرض أي محتوى أو index.html."""
     return "I'm alive!"
 
 # ---------------------------------------------------------------------
-# 13) إنشاء تطبيق تيليجرام وإضافة الهاندلرز وضبط Webhook
+# 13) تعيين Webhook URL
 # ---------------------------------------------------------------------
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-app.add_handler(CommandHandler("start", start_command))
-app.add_handler(CommandHandler("help", help_command))
-app.add_handler(CallbackQueryHandler(callback_handler))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-app.add_handler(PollAnswerHandler(poll_answer_handler))
-
-# ضبط Webhook عند البداية؛ تأكد من استخدام نطاقك الصحيح
-WEBHOOK_URL = "https://sums-qz.vercel.app/webhook"
+WEBHOOK_URL = "https://sums-qz.vercel.app/webhook"  # رابطك على Vercel
 try:
-    app.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set to: {WEBHOOK_URL}")
+    # حذف أي webhook قديم
+    app_telegram.bot.delete_webhook(drop_pending_updates=True)
+    # تعيين الويب هوك الجديد
+    app_telegram.bot.set_webhook(url=WEBHOOK_URL)
+    logger.info(f"Successfully set webhook to {WEBHOOK_URL}")
 except Exception as e:
     logger.error(f"Error setting webhook: {e}")
 
 # ---------------------------------------------------------------------
-# 14) نقطة الدخول الرئيسية لتشغيل Flask (Vercel ستستدعي هذه الدالة)
+# 14) نقطة الدخول الرئيسية لتشغيل Flask في Vercel
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
