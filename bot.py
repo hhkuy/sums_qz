@@ -7,7 +7,6 @@ import os
 import threading
 
 from flask import Flask, request
-
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -74,7 +73,7 @@ def fetch_questions(file_path: str):
 # ---------------------------------------------------------------------
 # 5) مفاتيح لتخزين الحالة في user_data و chat_data
 # ---------------------------------------------------------------------
-# لحالة المستخدم (أثناء اختيار الموضوع وعدد الأسئلة)
+# لحالة المستخدم أثناء اختيار الموضوع وعدد الأسئلة
 TOPICS_KEY = "topics"
 CUR_TOPIC_IDX_KEY = "current_topic_index"
 CUR_SUBTOPIC_IDX_KEY = "current_subtopic_index"
@@ -87,7 +86,7 @@ STATE_SELECT_SUBTOPIC = "select_subtopic"
 STATE_ASK_NUM_QUESTIONS = "ask_num_questions"
 STATE_SENDING_QUESTIONS = "sending_questions"
 
-# لتخزين بيانات الكويز في الدردشة (حتى يستفيد جميع الأعضاء في المجموعة)
+# لتخزين بيانات الكويز في الدردشة (ليستفيد منها جميع الأعضاء)
 ACTIVE_QUIZ_KEY = "active_quiz"
 
 # ---------------------------------------------------------------------
@@ -247,7 +246,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     lower_text = text_msg.lower()
 
-    # في المجموعات: إذا احتوى النص على إحدى العبارات، نفذ /start
+    # في المجموعات: إذا احتوى النص على إحدى العبارات، ننفذ /start
     if update.message.chat.type in ("group", "supergroup"):
         triggers = ["بوت سوي اسئلة", "بوت الاسئلة", "بوت وينك"]
         if any(trig.lower() in lower_text for trig in triggers):
@@ -298,12 +297,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"سيتم إرسال {num_q} سؤال(أسئلة) على شكل استفتاء (Quiz). بالتوفيق!"
         )
 
-        # تهيئة بيانات الكويز في chat_data (ليُستفيد منها جميع أعضاء الدردشة)
+        # تهيئة بيانات الكويز في chat_data (ليستفيد منها جميع أعضاء الدردشة)
         quiz_data = {
             "poll_ids": [],
             "poll_correct_answers": {},
             "total": num_q,
-            "participants": {}  # بيانات كل مشارك: user_id -> {"answered_count":0, "correct_count":0, "wrong_count":0}
+            "participants": {}  # لكل مشارك: user_id -> {answered_count, correct_count, wrong_count}
         }
         context.chat_data[ACTIVE_QUIZ_KEY] = quiz_data
 
@@ -330,9 +329,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 quiz_data["poll_correct_answers"][pid] = correct_id
 
         context.user_data[CURRENT_STATE_KEY] = None
-
     else:
-        # رسائل غير متعلقة بالاختبار نتجاهلها
         pass
 
 # ---------------------------------------------------------------------
@@ -373,7 +370,6 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             wrong = p_data["wrong_count"]
             total = quiz_data["total"]
 
-            # إعداد المنشن للمستخدم
             user_name = poll_answer.user.full_name
             user_username = poll_answer.user.username
             if user_username:
@@ -395,17 +391,17 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
 
 # ---------------------------------------------------------------------
-# 12) إعداد تطبيق Flask (ليعمل على الإنترنت فقط)
+# 12) إعداد تطبيق Flask (لتشغيل البوت أونلاين)
 # ---------------------------------------------------------------------
 flask_app = Flask(__name__)
 
 @flask_app.route("/")
 def index():
-    # صفحة بسيطة لعمل Ping من Uptime Robot
+    # صفحة بسيطة تستخدم لعمل Ping بواسطة Uptime Robot
     return "I'm alive!"
 
 # ---------------------------------------------------------------------
-# 13) تشغيل البوت عبر Polling في Thread وتشغيل Flask
+# 13) تشغيل بوت تيليجرام في Thread وتشغيل Flask
 # ---------------------------------------------------------------------
 def run_telegram_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
